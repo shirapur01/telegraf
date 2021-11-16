@@ -75,7 +75,15 @@
 
   ## Max duration (TTL) for each metric to stay cached/reported without being updated.
   # max_ttl = "10h"
+
+## Number of goroutines to be spun up to parse incoming messages. Raising
+## this limit will increase throughput of metric processing but also increase
+## CPU utilization. Default 1.
+# max_parser_threads = 1
+
 ```
+
+
 
 ### Description
 

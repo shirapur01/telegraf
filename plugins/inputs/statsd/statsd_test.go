@@ -140,7 +140,7 @@ func BenchmarkUDP(b *testing.B) {
 		var wg sync.WaitGroup
 		for i := 1; i <= producerThreads; i++ {
 			wg.Add(1)
-			go sendRequests(conn, &wg)
+			go sendRequests(conn, testMsg, &wg)
 		}
 		wg.Wait()
 
@@ -152,10 +152,17 @@ func BenchmarkUDP(b *testing.B) {
 	}
 }
 
-func sendRequests(conn net.Conn, wg *sync.WaitGroup) {
+//func sendRequests(conn net.Conn, wg *sync.WaitGroup) {
+//	defer wg.Done()
+//	for i := 0; i < 25000; i++ {
+//		//nolint:errcheck,revive
+//		fmt.Fprintf(conn, testMsg)
+//	}
+//}
+
+func sendRequests(conn net.Conn, test string, wg *sync.WaitGroup) {
 	defer wg.Done()
 	for i := 0; i < 25000; i++ {
-		//nolint:errcheck,revive
 		fmt.Fprintf(conn, testMsg)
 	}
 }
@@ -182,7 +189,42 @@ func BenchmarkTCP(b *testing.B) {
 		var wg sync.WaitGroup
 		for i := 1; i <= producerThreads; i++ {
 			wg.Add(1)
-			go sendRequests(conn, &wg)
+			go sendRequests(conn, testMsg, &wg)
+		}
+		wg.Wait()
+		// wait for 250,000 metrics to get added to accumulator
+		for len(listener.in) > 0 {
+			time.Sleep(time.Millisecond)
+		}
+		listener.Stop()
+	}
+}
+
+func BenchmarkUDPWithMultipleGoroutines(b *testing.B) {
+	listener := Statsd{
+		Protocol:               "udp",
+		ServiceAddress:         "localhost:8125",
+		AllowedPendingMessages: 250000,
+		MaxParserThreads:       10,
+	}
+	acc := &testutil.Accumulator{Discard: true}
+
+	// send multiple messages to socket
+	for n := 0; n < b.N; n++ {
+		err := listener.Start(acc)
+		if err != nil {
+			panic(err)
+		}
+
+		time.Sleep(time.Millisecond * 250)
+		conn, err := net.Dial("udp", "127.0.0.1:8125")
+		if err != nil {
+			panic(err)
+		}
+		var wg sync.WaitGroup
+		for i := 1; i <= producerThreads; i++ {
+			wg.Add(1)
+			go sendRequests(conn, testMsg, &wg)
 		}
 		wg.Wait()
 		// wait for 250,000 metrics to get added to accumulator
@@ -1672,4 +1714,98 @@ func TestParse_Ints(t *testing.T) {
 
 	require.NoError(t, s.Gather(acc))
 	require.Equal(t, s.Percentiles, []Number{90.0})
+}
+
+//This should be functionally identical to TCP
+func TestTCPWithMultipleGoroutines(t *testing.T) {
+	statsd := Statsd{
+		Protocol:               "tcp",
+		ServiceAddress:         "localhost:0",
+		AllowedPendingMessages: 10000,
+		MaxTCPConnections:      2,
+		MaxParserThreads:       3,
+	}
+	var acc testutil.Accumulator
+	err := statsd.Start(&acc)
+	require.NoError(t, err)
+	//require.NoError(t, statsd.Start(&acc))
+	defer statsd.Stop()
+
+	addr := statsd.TCPlistener.Addr().String()
+
+	conn, err := net.Dial("tcp", addr)
+	_, err = conn.Write([]byte("cpu.time_idle:42|c\n"))
+	require.NoError(t, err)
+	err = conn.Close()
+	require.NoError(t, err)
+
+	for {
+		err = statsd.Gather(&acc)
+		require.NoError(t, err)
+
+		if len(acc.Metrics) > 0 {
+			break
+		}
+	}
+
+	testutil.RequireMetricsEqual(t,
+		[]telegraf.Metric{
+			testutil.MustMetric(
+				"cpu_time_idle",
+				map[string]string{
+					"metric_type": "counter",
+				},
+				map[string]interface{}{
+					"value": 42,
+				},
+				time.Now(),
+			),
+		},
+		acc.GetTelegrafMetrics(),
+		testutil.IgnoreTime(),
+	)
+}
+
+func TestUdpMultipleParserGoroutines(t *testing.T) {
+	statsd := Statsd{
+		Protocol:               "udp",
+		ServiceAddress:         "localhost:8125",
+		AllowedPendingMessages: 250000,
+		MaxParserThreads:       3,
+	}
+	var acc testutil.Accumulator
+	require.NoError(t, statsd.Start(&acc))
+	defer statsd.Stop()
+
+	conn, err := net.Dial("udp", "127.0.0.1:8125")
+	_, err = conn.Write([]byte("cpu.time_idle:42|c\n"))
+	require.NoError(t, err)
+	err = conn.Close()
+	require.NoError(t, err)
+
+	for {
+		err = statsd.Gather(&acc)
+		require.NoError(t, err)
+
+		if len(acc.Metrics) > 0 {
+			break
+		}
+	}
+
+	testutil.RequireMetricsEqual(t,
+		[]telegraf.Metric{
+			testutil.MustMetric(
+				"cpu_time_idle",
+				map[string]string{
+					"metric_type": "counter",
+				},
+				map[string]interface{}{
+					"value": 42,
+				},
+				time.Now(),
+			),
+		},
+		acc.GetTelegrafMetrics(),
+		testutil.IgnoreTime(),
+	)
 }

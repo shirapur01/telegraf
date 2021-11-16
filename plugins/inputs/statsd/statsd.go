@@ -32,7 +32,7 @@ const (
 	defaultSeparator           = "_"
 	defaultAllowPendingMessage = 10000
 
-	parserGoRoutines = 5
+	//parserGoRoutines = 5
 )
 
 var errParsing = errors.New("error parsing statsd line")
@@ -158,6 +158,8 @@ type Statsd struct {
 
 	// A pool of byte slices to handle parsing
 	bufPool sync.Pool
+
+	MaxParserThreads int `toml:"max_parser_threads"`
 }
 
 type input struct {
@@ -456,16 +458,30 @@ func (s *Statsd) Start(ac telegraf.Accumulator) error {
 		}()
 	}
 
-	for i := 1; i <= parserGoRoutines; i++ {
+	//Defaulting to one
+	if s.MaxParserThreads < 1 {
+		s.MaxParserThreads = 1
+	}
+
+	for i := 1; i <= s.MaxParserThreads; i++ {
 		// Start the line parser
 		s.wg.Add(1)
 		go func() {
 			defer s.wg.Done()
-			if err := s.parser(); err != nil {
-				ac.AddError(err)
-			}
+			s.parser()
 		}()
 	}
+
+	//for i := 1; i <= parserGoRoutines; i++ {
+	//	// Start the line parser
+	//	s.wg.Add(1)
+	//	go func() {
+	//		defer s.wg.Done()
+	//		if err := s.parser(); err != nil {
+	//			ac.AddError(err)
+	//		}
+	//	}()
+	//}
 	s.Log.Infof("Started the statsd service on %q", s.ServiceAddress)
 	return nil
 }
